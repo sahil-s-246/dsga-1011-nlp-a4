@@ -8,7 +8,7 @@ import numpy as np
 import wandb
 
 from t5_utils import initialize_model, initialize_optimizer_and_scheduler, save_model, load_model_from_checkpoint, setup_wandb
-from transformers import GenerationConfig
+from transformers import GenerationConfig, T5TokenizerFast
 from load_data import load_t5_data
 from utils import compute_metrics, save_queries_and_records
 
@@ -140,14 +140,77 @@ def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_pa
     '''
     # TODO
     model.eval()
-    return 0, 0, 0, 0, 0
+    tokenizer = T5TokenizerFast.from_pretrained('google-t5/t5-small')
+    criterion = nn.CrossEntropyLoss()
+    total_loss = 0
+    total_tokens = 0
+    generated_queries = []
+
+    with torch.no_grad():
+        for encoder_input, encoder_mask, decoder_input, decoder_targets, _ in tqdm(dev_loader, desc="Evaluating"):
+            encoder_input = encoder_input.to(DEVICE)
+            encoder_mask = encoder_mask.to(DEVICE)
+            decoder_input = decoder_input.to(DEVICE)
+            decoder_targets = decoder_targets.to(DEVICE)
+
+            logits = model(
+                input_ids=encoder_input,
+                attention_mask=encoder_mask,
+                decoder_input_ids=decoder_input,
+            )['logits']
+
+            non_pad = decoder_targets != PAD_IDX
+            loss = criterion(logits[non_pad], decoder_targets[non_pad])
+            num_tokens = torch.sum(non_pad).item()
+            total_loss += loss.item() * num_tokens
+            total_tokens += num_tokens
+            
+            generated = model.generate(
+                input_ids=encoder_input,
+                attention_mask=encoder_mask,
+                max_length=512,
+                decoder_start_token_id=0,
+            )
+
+            decoded_queries = tokenizer.batch_decode(generated, skip_special_tokens=True)
+            generated_queries.extend([q.strip() for q in decoded_queries])
+             
+        avg_loss = total_loss / total_tokens if total_tokens > 0 else 0
+        save_queries_and_records(generated_queries, model_sql_path, model_record_path)
+
+        sql_em, record_em, record_f1, model_error_msgs = compute_metrics(gt_sql_pth, model_sql_path, gt_record_path, model_record_path)
+
+        error_rate = sum(1 for m in model_error_msgs if m is not None) / len(model_error_msgs) if model_error_msgs else 0
+
+    return avg_loss, record_f1, record_em, sql_em, error_rate
         
 def test_inference(args, model, test_loader, model_sql_path, model_record_path):
     '''
     You must implement inference to compute your model's generated SQL queries and its associated 
     database records. Implementation should be very similar to eval_epoch.
     '''
-    pass
+    model.eval()
+    tokenizer = T5TokenizerFast.from_pretrained('google-t5/t5-small')
+    generated_queries = []
+
+    with torch.no_grad():
+        for encoder_input, encoder_mask, _ in tqdm(test_loader, desc="Test Inference"):
+            encoder_input = encoder_input.to(DEVICE)
+            encoder_mask = encoder_mask.to(DEVICE)
+
+            generated = model.generate(
+                input_ids=encoder_input,
+                attention_mask=encoder_mask,
+                max_length=512,
+                decoder_start_token_id=0,
+            )
+
+            decoded_queries = tokenizer.batch_decode(generated, skip_special_tokens=True)
+            generated_queries.extend([q.strip() for q in decoded_queries])
+
+    save_queries_and_records(generated_queries, model_sql_path, model_record_path)
+    print(f"Test queries saved to: {model_sql_path}")
+    print(f"Test records saved to: {model_record_path}")
 
 def main():
     # Get key arguments

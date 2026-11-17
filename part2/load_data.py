@@ -26,16 +26,50 @@ class T5Dataset(Dataset):
               T5Tokenizer should serve that purpose.
             * Class behavior should be different on the test set.
         '''
-        # TODO
+        self.split = split
+        self.tokenizer = T5TokenizerFast.from_pretrained('google-t5/t5-small')
+        self.data = self.process_data(data_folder, split, self.tokenizer)
 
     def process_data(self, data_folder, split, tokenizer):
-        # TODO
+        nl_path = os.path.join(data_folder, f"{split}.nl" )
+        nl_lines = load_lines(nl_path)
+
+        prefix = "translate English to SQL: "
+        nl_prefix = [prefix + line for line in nl_lines] 
+
+        self.encoder_inputs = [torch.tensor(tokenizer.encode(text=line, add_special_tokens=True), dtype=torch.long) for line in nl_prefix ]  
+        if split != "test":
+            sql_path = os.path.join(data_folder, f"{split}.sql")
+            sql_lines = load_lines(sql_path)
+            sql_lines = [line.strip().rstrip(';') for line in sql_lines]
+
+            self.decoder_targets = []
+            self.decoder_inputs = []
+
+            for line in sql_lines:
+                target_ids = tokenizer.encode(line, add_special_tokens=True)
+
+                dec_in = [0] + target_ids[:-1]
+                dec_tgt = target_ids
+
+                self.decoder_inputs.append(torch.tensor(dec_in,dtype=torch.long))
+
+                self.decoder_targets.append(torch.tensor(dec_tgt, dtype=torch.long))
+
+        else:
+            self.decoder_inputs = None
+            self.decoder_targets = None
+            
+
     
     def __len__(self):
-        # TODO
+        return len(self.encoder_inputs)
 
     def __getitem__(self, idx):
-        # TODO
+        if self.split !="test":
+            return self.encoder_inputs[idx], self.decoder_inputs[idx], self.decoder_targets[idx]
+        else:
+            return self.encoder_inputs[idx]
 
 def normal_collate_fn(batch):
     '''
@@ -53,8 +87,19 @@ def normal_collate_fn(batch):
         * decoder_targets: The target tokens with which to train the decoder (the tokens following each decoder input)
         * initial_decoder_inputs: The very first input token to be decoder (only to be used in evaluation)
     '''
-    # TODO
-    return [], [], [], [], []
+    enc_list = [item[0] for item in batch]
+    dec_in_list = [item[1] for item in batch]
+    dec_tgt_list = [item[2] for item in batch]
+
+    encoder_ids = pad_sequence(enc_list, batch_first=True, padding_value=PAD_IDX)
+    encoder_mask = (encoder_ids != PAD_IDX).long()
+    
+    decoder_inputs = pad_sequence(dec_in_list, batch_first=True, padding_value=PAD_IDX)
+    decoder_targets = pad_sequence(dec_tgt_list, batch_first=True, padding_value=PAD_IDX)
+
+    initial_decoder_inputs = torch.zeros((len(batch), 1), dtype=torch.long)
+
+    return encoder_ids, encoder_mask, decoder_inputs, decoder_targets, initial_decoder_inputs
 
 def test_collate_fn(batch):
     '''
@@ -69,8 +114,10 @@ def test_collate_fn(batch):
         * encoder_mask: Mask of shape BxT associated with padding tokens in the encoder input
         * initial_decoder_inputs: The very first input token to be decoder (only to be used in evaluation)
     '''
-    # TODO
-    return [], [], []
+    encoder_ids = pad_sequence(batch, batch_first=True, padding_value=PAD_IDX)
+    encoder_mask = (encoder_ids != PAD_IDX).long()
+    intial_decoder_inputs = torch.zeros((len(batch), 1), dtype=torch.long)
+    return encoder_ids, encoder_mask, intial_decoder_inputs
 
 def get_dataloader(batch_size, split):
     data_folder = 'data'
@@ -96,5 +143,9 @@ def load_lines(path):
     return lines
 
 def load_prompting_data(data_folder):
-    # TODO
+    train_x = load_lines(os.path.join(data_folder, "train.nl"))
+    train_y = load_lines(os.path.join(data_folder, "train.sql"))
+    dev_x = load_lines(os.path.join(data_folder, "dev.nl"))
+    dev_y = load_lines(os.path.join(data_folder, "dev.sql"))
+    test_x = load_lines(os.path.join(data_folder, "test.nl"))
     return train_x, train_y, dev_x, dev_y, test_x

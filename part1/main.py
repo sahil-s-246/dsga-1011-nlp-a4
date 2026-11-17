@@ -1,3 +1,4 @@
+from utils import custom_transform
 import datasets
 from datasets import load_dataset
 from transformers import AutoTokenizer
@@ -45,7 +46,21 @@ def do_train(args, model, train_dataloader, save_dir="./out"):
     # You can use progress_bar.update(1) to see the progress during training
     # You can refer to the pytorch tutorial covered in class for reference
 
-    raise NotImplementedError
+    for epoch in range(num_epochs):
+      for batch in train_dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+
+        loss = outputs.loss
+        loss.backward()
+
+        optimizer.step()
+        lr_scheduler.step()
+
+        optimizer.zero_grad()
+
+        progress_bar.update(1)
+
 
     ##### YOUR CODE ENDS HERE ######
 
@@ -88,14 +103,20 @@ def do_eval(eval_dataloader, output_dir, out_file):
 def create_augmented_dataloader(args, dataset):
     ################################
     ##### YOUR CODE BEGINGS HERE ###
-
     # Here, 'dataset' is the original dataset. You should return a dataloader called 'train_dataloader' -- this
     # dataloader will be for the original training split augmented with 5k random transformed examples from the training set.
     # You may find it helpful to see how the dataloader was created at other place in this code.
+    sample_5k = dataset["train"].shuffle(seed=42).select(range(5000))
+    transformed_5k = sample_5k.map(custom_transform, load_from_cache_file=False)
 
-    raise NotImplementedError
+    augmented_dataset = datasets.concatenate_datasets([dataset["train"], transformed_5k])
 
-    ##### YOUR CODE ENDS HERE ######
+    augmented_tokenized = augmented_dataset.map(tokenize_function, batched=True, load_from_cache_file=False)
+    augmented_tokenized = augmented_tokenized.remove_columns(["text"])
+    augmented_tokenized = augmented_tokenized.rename_column("label", "labels")
+    augmented_tokenized.set_format("torch")
+
+    train_dataloader = DataLoader(augmented_tokenized, shuffle=True, batch_size=args.batch_size)
 
     return train_dataloader
 
@@ -158,7 +179,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
 
     # Tokenize the dataset
-    dataset = load_dataset("imdb")
+    dataset = load_dataset("stanfordnlp/imdb")
     tokenized_dataset = dataset.map(tokenize_function, batched=True)
 
     # Prepare dataset for use by model
